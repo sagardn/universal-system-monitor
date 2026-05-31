@@ -1,0 +1,202 @@
+name: Build & Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - name: Build frontend
+        run: cd frontend && bun install && bun run build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: frontend-dist
+          path: frontend/dist/
+
+  build-linux:
+    needs: build-frontend
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@v4
+        with:
+          name: frontend-dist
+          path: frontend/dist/
+      - name: Install dependencies
+        run: |
+          pip install pyinstaller
+          pip install -e .
+      - name: Build executable
+        run: pyinstaller usm.spec --clean
+      - name: Create .deb package
+        run: |
+          mkdir -p pkg/usr/local/bin
+          mkdir -p pkg/usr/share/applications
+          mkdir -p pkg/DEBIAN
+          cp dist/usm pkg/usr/local/bin/usm
+          chmod +x pkg/usr/local/bin/usm
+
+          cat > pkg/DEBIAN/control << EOF
+          Package: usm
+          Version: 0.2.0
+          Section: utils
+          Priority: optional
+          Architecture: amd64
+          Maintainer: sagardn
+          Description: Universal System Monitor
+           Real-time system monitor with GPU, thermal, disk health,
+           network controls, and premium dashboard UI.
+          Homepage: https://github.com/sagardn/universal-system-monitor
+          EOF
+
+          cat > pkg/usr/share/applications/usm.desktop << EOF
+          [Desktop Entry]
+          Name=Universal System Monitor
+          Comment=Real-time system monitor
+          Exec=usm
+          Terminal=true
+          Type=Application
+          Categories=System;Monitor;
+          Icon=utilities-system-monitor
+          EOF
+
+          dpkg-deb --build pkg usm_0.2.0_amd64.deb
+      - name: Create AppImage
+        run: |
+          mkdir -p AppDir/usr/bin AppDir/usr/share/icons/hicolor/256x256/apps
+          cp dist/usm AppDir/usr/bin/usm
+          chmod +x AppDir/usr/bin/usm
+
+          cat > AppDir/AppRun << 'APPRUN'
+          #!/bin/bash
+          SELF=$(readlink -f "$0")
+          HERE=${SELF%/*}
+          exec "${HERE}/usr/bin/usm" "$@"
+          APPRUN
+          chmod +x AppDir/AppRun
+
+          cat > AppDir/usm.desktop << EOF
+          [Desktop Entry]
+          Name=USM
+          Exec=usm
+          Icon=usm
+          Type=Application
+          Categories=System;Monitor;
+          EOF
+
+          # Download appimagetool
+          wget -q https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
+          chmod +x appimagetool-x86_64.AppImage
+          ARCH=x86_64 ./appimagetool-x86_64.AppImage AppDir USM-0.2.0-x86_64.AppImage || true
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-builds
+          path: |
+            dist/usm
+            usm_0.2.0_amd64.deb
+            USM-0.2.0-x86_64.AppImage
+
+  build-macos:
+    needs: build-frontend
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@v4
+        with:
+          name: frontend-dist
+          path: frontend/dist/
+      - name: Install dependencies
+        run: |
+          pip install pyinstaller
+          pip install -e .
+      - name: Build executable
+        run: pyinstaller usm.spec --clean
+      - name: Create DMG
+        run: |
+          mkdir -p dmg_contents
+          cp -r dist/USM.app dmg_contents/ 2>/dev/null || cp dist/usm dmg_contents/usm
+          hdiutil create -volname "USM" -srcfolder dmg_contents -ov -format UDZO USM-0.2.0-macos.dmg
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-builds
+          path: USM-0.2.0-macos.dmg
+
+  build-windows:
+    needs: build-frontend
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@v4
+        with:
+          name: frontend-dist
+          path: frontend/dist/
+      - name: Install dependencies
+        run: |
+          pip install pyinstaller
+          pip install -e .
+      - name: Build executable
+        run: pyinstaller usm.spec --clean
+      - name: Rename output
+        run: |
+          mkdir -p release
+          copy dist\usm.exe release\USM-0.2.0-windows.exe
+        shell: cmd
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-builds
+          path: release/USM-0.2.0-windows.exe
+
+  release:
+    needs: [build-linux, build-macos, build-windows]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts/
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            artifacts/linux-builds/dist/usm
+            artifacts/linux-builds/usm_0.2.0_amd64.deb
+            artifacts/linux-builds/USM-0.2.0-x86_64.AppImage
+            artifacts/macos-builds/USM-0.2.0-macos.dmg
+            artifacts/windows-builds/USM-0.2.0-windows.exe
+          body: |
+            ## Universal System Monitor v0.2.0
+
+            ### Downloads
+            | Platform | File | Description |
+            |----------|------|-------------|
+            | 🐧 Linux (any distro) | `USM-0.2.0-x86_64.AppImage` | Single file, runs anywhere |
+            | 🐧 Ubuntu/Debian | `usm_0.2.0_amd64.deb` | `sudo dpkg -i usm_0.2.0_amd64.deb` |
+            | 🐧 Linux (binary) | `usm` | Standalone executable |
+            | 🍎 macOS | `USM-0.2.0-macos.dmg` | Open DMG, drag to Applications |
+            | 🪟 Windows | `USM-0.2.0-windows.exe` | Run directly |
+
+            ### What's New
+            - Universal cross-platform support (Linux full, macOS/Windows basic)
+            - Auto-detects GPU (NVIDIA/AMD/Intel), distro, sensors, services
+            - 16 data collectors, 17 dashboard pages
+            - Premium UI with dark/light themes
+          draft: false
+          prerelease: false

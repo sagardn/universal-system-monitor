@@ -1,0 +1,12 @@
+# Universal System Monitor — passwordless sudo rules for service management
+# Install: sudo cp this-file /etc/sudoers.d/usm && sudo chmod 440 /etc/sudoers.d/usm
+# Security: only allows systemctl, kill, and snapper — not arbitrary commands
+
+cash ALL=(root) NOPASSWD: /usr/bin/systemctl start *
+cash ALL=(root) NOPASSWD: /usr/bin/systemctl stop *
+cash ALL=(root) NOPASSWD: /usr/bin/systemctl restart *
+cash ALL=(root) NOPASSWD: /usr/bin/systemctl enable *
+cash ALL=(root) NOPASSWD: /usr/bin/systemctl disable *
+cash ALL=(root) NOPASSWD: /usr/bin/systemctl reload *
+cash ALL=(root) NOPASSWD: /usr/bin/kill *
+cash ALL=(root) NOPASSWD: /usr/bin/snapper *
